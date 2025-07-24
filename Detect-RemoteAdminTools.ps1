@@ -37,17 +37,27 @@ function Rotate-Log {
 }
 
 Rotate-Log
+
+try {
+  if (Test-Path $ARLog) {
+    Remove-Item -Path $ARLog -Force -ErrorAction Stop
+  }
+  New-Item -Path $ARLog -ItemType File -Force | Out-Null
+  Write-Log "Active response log cleared for fresh run."
+} catch {
+  Write-Log "Failed to clear ${ARLog}: $($_.Exception.Message)" 'WARN'
+}
+
 Write-Log "=== SCRIPT START : Detect Remote Admin Tools (Registry + Filesystem) ==="
-$ToolPatterns = @(
-  'TeamViewer', 'AnyDesk', 'Ammyy', 'RemoteUtilities', 'UltraViewer', 'AeroAdmin'
-)
+
+$ToolPatterns = @('TeamViewer','AnyDesk','Ammyy','RemoteUtilities','UltraViewer','AeroAdmin')
 $RegPaths = @(
   "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
   "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
   "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
 )
-
 $Detections = @()
+
 foreach ($path in $RegPaths) {
   $Detections += Get-ItemProperty $path -ErrorAction SilentlyContinue | ForEach-Object {
     $name = $_.DisplayName
@@ -66,15 +76,13 @@ foreach ($path in $RegPaths) {
     }
   }
 }
-$SearchRoots = @(
-  "C:\Program Files", "C:\Program Files (x86)",
-  "$env:ProgramData", "$env:APPDATA", "$env:LOCALAPPDATA", "C:\Users\Public"
-)
+
+$SearchRoots = @("C:\Program Files","C:\Program Files (x86)","$env:ProgramData","$env:APPDATA","$env:LOCALAPPDATA","C:\Users\Public")
+
 foreach ($root in $SearchRoots) {
   foreach ($pattern in $ToolPatterns) {
     try {
-      Get-ChildItem -Path $root -Filter "$pattern*.exe" -Recurse -ErrorAction SilentlyContinue |
-      ForEach-Object {
+      Get-ChildItem -Path $root -Filter "$pattern*.exe" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
         $Detections += [PSCustomObject]@{
           source  = 'Filesystem'
           name    = $_.Name
@@ -83,13 +91,13 @@ foreach ($root in $SearchRoots) {
         }
         Write-Log "Flagged (Filesystem): $($_.FullName)" 'WARN'
       }
-    } catch { }
+    } catch {}
   }
 }
 
 $Detections = $Detections | Sort-Object name, path -Unique
-
 $timestamp = (Get-Date).ToString("o")
+
 $FullReport = @{
   host = $HostName
   timestamp = $timestamp
@@ -109,11 +117,11 @@ $FlaggedReport = @{
 $FullReport   | ConvertTo-Json -Depth 5 -Compress | Out-File -FilePath $ARLog -Append -Encoding ascii -Width 2000
 $FlaggedReport| ConvertTo-Json -Depth 5 -Compress | Out-File -FilePath $ARLog -Append -Encoding ascii -Width 2000
 
-Write-Log "JSON reports (full + flagged) appended to $ARLog"
-
+Write-Log "JSON reports (full + flagged) written to $ARLog"
 Write-Host "`n=== Remote Admin Tool Detection Report ==="
 Write-Host "Host: $HostName"
 Write-Host "Tools Found: $($Detections.Count)"
+
 if ($Detections.Count -gt 0) {
   $Detections | Format-Table -AutoSize
 } else {
