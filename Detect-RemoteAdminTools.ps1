@@ -87,6 +87,7 @@ $Report = [PSCustomObject]@{
   action      = "detect_remote_admin_tools"
   total_found = $Detections.Count
   detections  = $Detections
+  copilot_soar = $true
 }
 $json = $Report | ConvertTo-Json -Depth 5 -Compress
 $tempFile = "$env:TEMP\arlog.tmp"
