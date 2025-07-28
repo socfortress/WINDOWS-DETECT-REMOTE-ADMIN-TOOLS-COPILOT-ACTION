@@ -35,21 +35,8 @@ function Rotate-Log {
     }
   }
 }
-
 Rotate-Log
-
-try {
-  if (Test-Path $ARLog) {
-    Remove-Item -Path $ARLog -Force -ErrorAction Stop
-  }
-  New-Item -Path $ARLog -ItemType File -Force | Out-Null
-  Write-Log "Active response log cleared for fresh run."
-} catch {
-  Write-Log "Failed to clear ${ARLog}: $($_.Exception.Message)" 'WARN'
-}
-
 Write-Log "=== SCRIPT START : Detect Remote Admin Tools (Registry + Filesystem) ==="
-
 $ToolPatterns = @('TeamViewer','AnyDesk','Ammyy','RemoteUtilities','UltraViewer','AeroAdmin')
 $RegPaths = @(
   "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
@@ -57,7 +44,6 @@ $RegPaths = @(
   "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
 )
 $Detections = @()
-
 foreach ($path in $RegPaths) {
   $Detections += Get-ItemProperty $path -ErrorAction SilentlyContinue | ForEach-Object {
     $name = $_.DisplayName
@@ -76,9 +62,7 @@ foreach ($path in $RegPaths) {
     }
   }
 }
-
 $SearchRoots = @("C:\Program Files","C:\Program Files (x86)","$env:ProgramData","$env:APPDATA","$env:LOCALAPPDATA","C:\Users\Public")
-
 foreach ($root in $SearchRoots) {
   foreach ($pattern in $ToolPatterns) {
     try {
@@ -97,31 +81,27 @@ foreach ($root in $SearchRoots) {
 
 $Detections = $Detections | Sort-Object name, path -Unique
 $timestamp = (Get-Date).ToString("o")
-
-$FullReport = @{
-  host = $HostName
-  timestamp = $timestamp
-  action = "detect_remote_admin_tools"
-  item_count = $Detections.Count
-  detections = $Detections
+$Report = [PSCustomObject]@{
+  host        = $HostName
+  timestamp   = $timestamp
+  action      = "detect_remote_admin_tools"
+  total_found = $Detections.Count
+  detections  = $Detections
 }
+$json = $Report | ConvertTo-Json -Depth 5 -Compress
+$tempFile = "$env:TEMP\arlog.tmp"
+Set-Content -Path $tempFile -Value $json -Encoding ascii -Force
 
-$FlaggedReport = @{
-  host = $HostName
-  timestamp = $timestamp
-  action = "detect_remote_admin_tools_flagged"
-  flagged_count = $Detections.Count
-  flagged_detections = $Detections
+try {
+  Move-Item -Path $tempFile -Destination $ARLog -Force
+  Write-Log "Log file replaced at $ARLog"
+} catch {
+  Move-Item -Path $tempFile -Destination "$ARLog.new" -Force
+  Write-Log "Log locked, wrote results to $ARLog.new" 'WARN'
 }
-
-$FullReport   | ConvertTo-Json -Depth 5 -Compress | Out-File -FilePath $ARLog -Append -Encoding ascii -Width 2000
-$FlaggedReport| ConvertTo-Json -Depth 5 -Compress | Out-File -FilePath $ARLog -Append -Encoding ascii -Width 2000
-
-Write-Log "JSON reports (full + flagged) written to $ARLog"
 Write-Host "`n=== Remote Admin Tool Detection Report ==="
 Write-Host "Host: $HostName"
 Write-Host "Tools Found: $($Detections.Count)"
-
 if ($Detections.Count -gt 0) {
   $Detections | Format-Table -AutoSize
 } else {
