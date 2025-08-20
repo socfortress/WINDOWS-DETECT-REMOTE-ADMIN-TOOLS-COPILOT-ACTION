@@ -87,7 +87,7 @@ $Report = [PSCustomObject]@{
   action      = "detect_remote_admin_tools"
   total_found = $Detections.Count
   detections  = $Detections
-  copilot_soar = $true
+  copilot_action = $true
 }
 $json = $Report | ConvertTo-Json -Depth 5 -Compress
 $tempFile = "$env:TEMP\arlog.tmp"
@@ -111,3 +111,4 @@ if ($Detections.Count -gt 0) {
 
 $dur = [int]((Get-Date) - $runStart).TotalSeconds
 Write-Log "=== SCRIPT END : duration ${dur}s ==="
+
