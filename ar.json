@@ -1,5 +1,5 @@
 {
-  "active_response_name": "WINDOWS-DETECT-REMOTE-ADMIN-TOOLS-ACTIVERESPONSE",
+  "copilot_action_name": "WINDOWS-DETECT-REMOTE-ADMIN-TOOLS-ACTIVERESPONSE",
   "description": "Detects potentially unwanted remote administration tools (RATs) like TeamViewer, AnyDesk, Ammyy, RemoteUtilities, UltraViewer, and AeroAdmin by scanning both registry uninstall entries and filesystem paths for matching executables. Outputs NDJSON (detailed per-detection or zero-results summary) and writes atomically to the Active Response log with .new fallback.",
   "technology": "Windows",
   "icon": "windows",
