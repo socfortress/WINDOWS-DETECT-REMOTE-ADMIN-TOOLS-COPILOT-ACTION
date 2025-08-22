@@ -1,0 +1,26 @@
+{
+  "active_response_name": "WINDOWS-DETECT-REMOTE-ADMIN-TOOLS-ACTIVERESPONSE",
+  "description": "Detects potentially unwanted remote administration tools (RATs) like TeamViewer, AnyDesk, Ammyy, RemoteUtilities, UltraViewer, and AeroAdmin by scanning both registry uninstall entries and filesystem paths for matching executables. Outputs NDJSON (detailed per-detection or zero-results summary) and writes atomically to the Active Response log with .new fallback.",
+  "technology": "Windows",
+  "icon": "windows",
+  "script_parameters": [
+    {
+      "name": "LogPath",
+      "type": "string",
+      "required": false,
+      "description": "Path to the rotating human-readable script log.",
+      "default": "%TEMP%/Detect-RemoteAdminTools.log"
+    },
+    {
+      "name": "ARLog",
+      "type": "string",
+      "required": false,
+      "description": "Active Response NDJSON output path (atomic overwrite; falls back to .new if locked).",
+      "default": "C:\\Program Files (x86)\\ossec-agent\\active-response\\active-responses.log"
+    }
+  ],
+  "repo_url": "https://github.com/socfortress/WINDOWS-DETECT-REMOTE-ADMIN-TOOLS-ACTIVERESPONSE",
+  "script_name": "Detect-RemoteAdminTools.ps1",
+  "version": "1.0.0",
+  "last_updated": "2025-08-22T00:00:00Z"
+}
