@@ -1,191 +1,159 @@
 [CmdletBinding()]
 param(
-  [string]$LogPath = "$env:TEMP\Detect-RemoteAdminTools.log",
-  [string]$ARLog   = 'C:\Program Files (x86)\ossec-agent\active-response\active-responses.log'
+  [string]$LogPath = "$env:TEMP\Detect-Remote-Admin-Tools-script.log",
+  [string]$ARLog   = 'C:\Program Files (x86)\ossec-agent\active-response\active-responses.log',
+  [int]   $MaxScanSeconds = 120,
+  [int]   $MaxDetections  = 200
 )
 
-$ErrorActionPreference='Stop'
-$HostName=$env:COMPUTERNAME
-$LogMaxKB=100
-$LogKeep=5
-$runStart=Get-Date
+$ErrorActionPreference = 'Stop'
+$ScriptName = "Detect-Remote-Admin-Tools"
+$HostName   = $env:COMPUTERNAME
+$LogMaxKB   = 100
+$LogKeep    = 5
+$RunStart   = Get-Date
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
 
 function Write-Log {
   param([string]$Message,[ValidateSet('INFO','WARN','ERROR','DEBUG')]$Level='INFO')
-  $ts=(Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
-  $line="[$ts][$Level] $Message"
-  switch($Level){
-    'ERROR'{Write-Host $line -ForegroundColor Red}
-    'WARN' {Write-Host $line -ForegroundColor Yellow}
-    'DEBUG'{if($PSCmdlet.MyInvocation.BoundParameters.ContainsKey('Verbose')){Write-Verbose $line}}
-    default{Write-Host $line}
+  $ts = Get-Date -Format "yyyy-MM-dd HH:mm:sszzz"
+  $line = "[$ts][$Level] $Message"
+  switch ($Level) {
+    'ERROR' { Write-Host $line -ForegroundColor Red }
+    'WARN'  { Write-Host $line -ForegroundColor Yellow }
+    default { Write-Host $line }
   }
-  Add-Content -Path $LogPath -Value $line -Encoding utf8
+  try { Add-Content -Path $LogPath -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue } catch {}
 }
-
 function Rotate-Log {
-  if(Test-Path $LogPath -PathType Leaf){
-    if((Get-Item $LogPath).Length/1KB -gt $LogMaxKB){
-      for($i=$LogKeep-1;$i -ge 0;$i--){
-        $old="$LogPath.$i";$new="$LogPath."+($i+1)
-        if(Test-Path $old){Rename-Item $old $new -Force}
+  if (Test-Path $LogPath -PathType Leaf) {
+    $sizeKB = [math]::Floor((Get-Item $LogPath).Length / 1KB)
+    if ($sizeKB -gt $LogMaxKB) {
+      for ($i = $LogKeep - 1; $i -ge 1; $i--) {
+        $src = "$LogPath.$i"; $dst = "$LogPath." + ($i + 1)
+        if (Test-Path $src) { Move-Item -Force $src $dst -ErrorAction SilentlyContinue }
       }
-      Rename-Item $LogPath "$LogPath.1" -Force
+      Move-Item -Force $LogPath "$LogPath.1" -ErrorAction SilentlyContinue
+    }
+  }
+}
+function New-ArJsonLine { param([hashtable]$Fields)
+  $std = [ordered]@{
+    timestamp      = (Get-Date).ToUniversalTime().ToString("o")
+    host           = $HostName
+    action         = $ScriptName
+    copilot_action = $true
+  }
+  ($std + $Fields) | ConvertTo-Json -Compress
+}
+function Commit-NDJSON { param([string[]]$Lines,[string]$Path=$ARLog)
+  if (-not $Lines -or $Lines.Count -eq 0) {
+    $Lines = @( New-ArJsonLine @{ item="status"; status="no_results"; message="no detections" } )
+  }
+  $tmp = Join-Path $env:TEMP ("arlog_{0}.tmp" -f ([guid]::NewGuid().ToString("N")))
+  $dir = Split-Path -Parent $Path
+  if ($dir -and -not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
+  try {
+    [System.IO.File]::WriteAllLines($tmp, $Lines, [System.Text.Encoding]::ASCII)
+    try { Move-Item -Force -Path $tmp -Destination $Path }
+    catch { Write-Log "Primary move to $Path failed; writing .new fallback" "WARN"; Move-Item -Force -Path $tmp -Destination ($Path + ".new") }
+  } finally { if (Test-Path $tmp) { Remove-Item -Force $tmp -ErrorAction SilentlyContinue } }
+  foreach ($p in @($Path, ($Path + ".new"))) {
+    if (Test-Path $p) {
+      $fi = Get-Item $p
+      $head = Get-Content -Path $p -TotalCount 1 -ErrorAction SilentlyContinue
+      if (-not $head) { $head = "<empty>" }
+      Write-Log ("VERIFY: path={0} size={1}B first_line={2}" -f $fi.FullName, $fi.Length, $head) "INFO"
     }
   }
 }
 
-function NowZ { (Get-Date).ToString('yyyy-MM-dd HH:mm:sszzz') }
-
-function Write-NDJSONLines {
-  param([string[]]$JsonLines,[string]$Path=$ARLog)
-  $tmp = Join-Path $env:TEMP ("arlog_{0}.tmp" -f ([guid]::NewGuid().ToString("N")))
-  $dir = Split-Path -Parent $Path
-  if ($dir -and -not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
-  Set-Content -Path $tmp -Value ($JsonLines -join [Environment]::NewLine) -Encoding ascii -Force
-  try { Move-Item -Path $tmp -Destination $Path -Force } catch { Move-Item -Path $tmp -Destination ($Path + '.new') -Force }
-}
-
-Rotate-Log
-Write-Log "=== SCRIPT START : Detect Remote Admin Tools (Registry + Filesystem) ==="
-
-$ToolPatterns=@('TeamViewer','AnyDesk','Ammyy','RemoteUtilities','UltraViewer','AeroAdmin')
-$RegPaths=@(
+$ToolPatterns = @('TeamViewer','AnyDesk','Ammyy','RemoteUtilities','UltraViewer','AeroAdmin')
+$RegPaths = @(
   "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
   "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
   "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
 )
-$SearchRoots=@("C:\Program Files","C:\Program Files (x86)","$env:ProgramData","$env:APPDATA","$env:LOCALAPPDATA","C:\Users\Public")
+$SearchRoots = @("C:\Program Files","C:\Program Files (x86)","$env:ProgramData","$env:APPDATA","$env:LOCALAPPDATA","C:\Users\Public")
 
-$Detections=@()
-$ts = NowZ
-$lines=@()
+Rotate-Log
+Write-Log "=== SCRIPT START : $ScriptName (host=$HostName) ===" "INFO"
 
-try{
-  
+try {
+  $lines = @()
+  $detections = New-Object System.Collections.Generic.List[object]
   $regKeysScanned = 0
-  foreach($path in $RegPaths){
+
+  $lines += New-ArJsonLine @{ item="config"; patterns=$ToolPatterns; reg_paths=$RegPaths; search_roots=$SearchRoots }
+
+  Write-Log "Scanning registry uninstall keys..." "INFO"
+  foreach ($path in $RegPaths) {
+    if ($sw.Elapsed.TotalSeconds -ge $MaxScanSeconds) { Write-Log "Time budget reached (registry phase)" "WARN"; break }
     $items = @(Get-ItemProperty $path -ErrorAction SilentlyContinue)
-    foreach($it in $items){
+    foreach ($it in $items) {
       $regKeysScanned++
-      $name=$it.DisplayName
-      if($name){
-        foreach($pattern in $ToolPatterns){
-          if($name -match [regex]::Escape($pattern)){
-            $Detections += [pscustomobject]@{
-              source='Registry'
-              name=$name
-              version=$it.DisplayVersion
-              path=$it.PSPath
-            }
-            Write-Log "Flagged (Registry): $name" 'WARN'
+      $name = $it.DisplayName
+      if ($name) {
+        foreach ($pattern in $ToolPatterns) {
+          if ($name -match [regex]::Escape($pattern)) {
+            $detections.Add([pscustomobject]@{ source='Registry'; name=$name; version=$it.DisplayVersion; path=$it.PSPath })
+            Write-Log "Flagged (Registry): $name" "WARN"
             break
           }
         }
       }
+      if ($sw.Elapsed.TotalSeconds -ge $MaxScanSeconds -or $detections.Count -ge $MaxDetections) { break }
     }
   }
 
-  foreach($root in $SearchRoots){
-    foreach($pattern in $ToolPatterns){
-      try{
-        $dirs = @(
-          Get-ChildItem -LiteralPath $root -Directory -Recurse -ErrorAction SilentlyContinue |
-          Where-Object { $_.Name -match [regex]::Escape($pattern) }
-        )
-        foreach($dir in $dirs){
-          try{
-            Get-ChildItem -LiteralPath $dir.FullName -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue | ForEach-Object{
-              $Detections += [pscustomobject]@{
-                source='Filesystem'
-                name=$_.Name
-                version=$null
-                path=$_.FullName
-              }
-              Write-Log "Flagged (Filesystem): $($_.FullName)" 'WARN'
+  Write-Log "Scanning filesystem roots (dir-name match only)..." "INFO"
+  foreach ($root in $SearchRoots) {
+    if ($sw.Elapsed.TotalSeconds -ge $MaxScanSeconds) { Write-Log "Time budget reached (filesystem phase)" "WARN"; break }
+    foreach ($pattern in $ToolPatterns) {
+      if ($sw.Elapsed.TotalSeconds -ge $MaxScanSeconds) { break }
+      try {
+        $candidateDirs = Get-ChildItem -LiteralPath $root -Directory -Recurse -ErrorAction SilentlyContinue |
+                         Where-Object { $_.Name -match [regex]::Escape($pattern) }
+        foreach ($dir in $candidateDirs) {
+          if ($sw.Elapsed.TotalSeconds -ge $MaxScanSeconds -or $detections.Count -ge $MaxDetections) { break }
+          try {
+            Get-ChildItem -LiteralPath $dir.FullName -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+              $detections.Add([pscustomobject]@{ source='Filesystem'; name=$_.Name; version=$null; path=$_.FullName })
+              Write-Log "Flagged (Filesystem): $($_.FullName)" "WARN"
             }
-          }catch{}
+          } catch {}
         }
-
-        Get-ChildItem -LiteralPath $root -Filter ("{0}*.exe" -f $pattern) -Recurse -ErrorAction SilentlyContinue | ForEach-Object{
-          $Detections += [pscustomobject]@{
-            source='Filesystem'
-            name=$_.Name
-            version=$null
-            path=$_.FullName
-          }
-          Write-Log "Flagged (Filesystem): $($_.FullName)" 'WARN'
-        }
-      }catch{}
+      } catch {}
+      if ($detections.Count -ge $MaxDetections) { Write-Log "MaxDetections cap reached ($MaxDetections)" "WARN"; break }
     }
   }
 
-  $Detections = $Detections | Sort-Object name, path -Unique
+  $detections = $detections | Sort-Object name, path -Unique
+  $lines = @(
+    New-ArJsonLine @{
+      item             = "summary"
+      total_found      = $detections.Count
+      reg_keys_scanned = $regKeysScanned
+      duration_s       = [math]::Round($sw.Elapsed.TotalSeconds,1)
+      capped           = ($detections.Count -ge $MaxDetections)
+      timed_out        = ($sw.Elapsed.TotalSeconds -ge $MaxScanSeconds)
+    }
+  ) + $lines
 
-  $lines += ([pscustomobject]@{
-    timestamp      = $ts
-    host           = $HostName
-    action         = 'detect_remote_admin_tools'
-    copilot_action = $true
-    type           = 'verify_source'
-    reg_paths      = $RegPaths
-    search_roots   = $SearchRoots
-    patterns       = $ToolPatterns
-    reg_keys_scanned = $regKeysScanned
-    detections_count = $Detections.Count
-  } | ConvertTo-Json -Compress -Depth 6)
-
-  foreach($d in $Detections){
-    $lines += ([pscustomobject]@{
-      timestamp      = $ts
-      host           = $HostName
-      action         = 'detect_remote_admin_tools'
-      copilot_action = $true
-      type           = 'detection'
-      source         = $d.source
-      name           = $d.name
-      version        = $d.version
-      path           = $d.path
-    } | ConvertTo-Json -Compress -Depth 5)
+  foreach ($d in $detections) {
+    $lines += New-ArJsonLine @{ item="detection"; source=$d.source; name=$d.name; version=$d.version; path=$d.path }
   }
 
-  $summary = [pscustomobject]@{
-    timestamp      = $ts
-    host           = $HostName
-    action         = 'detect_remote_admin_tools'
-    copilot_action = $true
-    type           = 'summary'
-    total_found    = $Detections.Count
-    duration_s     = [math]::Round(((Get-Date)-$runStart).TotalSeconds,1)
-  }
-  $lines = @(( $summary | ConvertTo-Json -Compress -Depth 6 )) + $lines
-
-  Write-NDJSONLines -JsonLines $lines -Path $ARLog
-  Write-Log ("NDJSON written to {0} ({1} lines)" -f $ARLog,$lines.Count) 'INFO'
-
-  Write-Host "`n=== Remote Admin Tool Detection Report ==="
-  Write-Host "Host: $HostName"
-  Write-Host "Tools Found: $($Detections.Count)"
-  if($Detections.Count -gt 0){
-    $Detections | Format-Table -AutoSize
-  } else {
-    Write-Host "No remote admin tools detected."
-  }
+  Commit-NDJSON -Lines $lines -Path $ARLog
+  Write-Log ("NDJSON written to {0} ({1} lines)" -f $ARLog,$lines.Count) "INFO"
 }
-catch{
+catch {
   Write-Log $_.Exception.Message 'ERROR'
-  $err = [pscustomobject]@{
-    timestamp      = NowZ
-    host           = $HostName
-    action         = 'detect_remote_admin_tools'
-    copilot_action = $true
-    type           = 'error'
-    error          = $_.Exception.Message
-  }
-  Write-NDJSONLines -JsonLines @(($err | ConvertTo-Json -Compress -Depth 6)) -Path $ARLog
-  Write-Log "Error NDJSON written" 'INFO'
+  Commit-NDJSON -Lines @( New-ArJsonLine @{ item="error"; status="error"; error="$($_.Exception.Message)" } ) -Path $ARLog
+  Write-Log "Error NDJSON written" "INFO"
 }
-finally{
-  $dur=[int]((Get-Date)-$runStart).TotalSeconds
-  Write-Log "=== SCRIPT END : duration ${dur}s ==="
+finally {
+  $sw.Stop()
+  $dur = [int]$sw.Elapsed.TotalSeconds
+  Write-Log "=== SCRIPT END : duration ${dur}s ===" "INFO"
 }
